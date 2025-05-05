@@ -1,0 +1,621 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Rastreador de Hábitos</title>
+  <script src="https://cdn.jsdelivr.net/npm/react@18.2.0/umd/react.development.js" crossorigin></script>
+  <script src="https://cdn.jsdelivr.net/npm/react-dom@18.2.0/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.22.5/babel.min.js" crossorigin></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/date-fns@2.30.0/dist/date-fns.min.js" crossorigin></script>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+    .container { max-width: 1200px; margin: 0 auto; padding: 1rem; }
+    .error { color: red; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    // Custom UUID Generator
+    function generateUUID() {
+      return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+        const r = Math.random() * 16 | 0;
+        const v = c === 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+      });
+    }
+
+    // Error Boundary Component
+    class ErrorBoundary extends React.Component {
+      state = { hasError: false, error: null };
+      static getDerivedStateFromError(error) {
+        console.error("ErrorBoundary caught:", error);
+        return { hasError: true, error };
+      }
+      render() {
+        if (this.state.hasError) {
+          return <div className="error p-4">Erro: {this.state.error?.message || "Desconhecido"}</div>;
+        }
+        return this.props.children;
+      }
+    }
+
+    // Main App Component
+    function App() {
+      const [isAuthenticated, setIsAuthenticated] = React.useState(false);
+      const [password, setPassword] = React.useState('');
+      const [habits, setHabits] = React.useState([]);
+      const [newHabit, setNewHabit] = React.useState({
+        name: '', goal: 1, unit: 'vezes', repeatType: 'diariamente', repeatDays: [], repeatInterval: 2, reminders: [], category: 'Geral'
+      });
+      const [editingHabit, setEditingHabit] = React.useState(null);
+      const [timer, setTimer] = React.useState({ habitId: null, seconds: 0, isRunning: false });
+      const [currentMonth, setCurrentMonth] = React.useState(new Date());
+
+      // Load habits from LocalStorage
+      React.useEffect(() => {
+        try {
+          const savedHabits = localStorage.getItem('habits');
+          if (savedHabits) {
+            const parsedHabits = JSON.parse(savedHabits);
+            setHabits(parsedHabits);
+            console.log("Habits loaded from LocalStorage:", parsedHabits);
+          }
+        } catch (error) {
+          console.error("Error loading habits from LocalStorage:", error);
+        }
+        if (Notification.permission !== 'granted') {
+          Notification.requestPermission();
+        }
+      }, []);
+
+      // Save habits to LocalStorage
+      React.useEffect(() => {
+        try {
+          localStorage.setItem('habits', JSON.stringify(habits));
+          console.log("Habits saved to LocalStorage:", habits);
+        } catch (error) {
+          console.error("Error saving habits to LocalStorage:", error);
+        }
+      }, [habits]);
+
+      // Timer logic
+      React.useEffect(() => {
+        let interval;
+        if (timer.isRunning) {
+          interval = setInterval(() => {
+            setTimer(prev => ({ ...prev, seconds: prev.seconds + 1 }));
+          }, 1000);
+        }
+        return () => clearInterval(interval);
+      }, [timer.isRunning]);
+
+      // Handle login
+      const handleLogin = (e) => {
+        e.preventDefault();
+        if (password === 'minhasenha123') {
+          setIsAuthenticated(true);
+          setPassword('');
+          console.log("Login successful");
+        } else {
+          alert('Senha incorreta!');
+          console.log("Login failed: incorrect password");
+        }
+      };
+
+      // Add or edit habit
+      const saveHabit = (e) => {
+        e.preventDefault();
+        console.log("Attempting to save habit:", newHabit);
+        if (!newHabit.name || !newHabit.goal) {
+          alert('Preencha o nome e o objetivo do hábito!');
+          console.log("Validation failed: missing name or goal");
+          return;
+        }
+        try {
+          if (editingHabit) {
+            // Edit existing habit
+            console.log("Editing habit:", editingHabit.id);
+            const updatedHabit = {
+              ...editingHabit,
+              name: newHabit.name,
+              goal: newHabit.goal,
+              unit: newHabit.unit,
+              repeatType: newHabit.repeatType,
+              repeatDays: newHabit.repeatDays || [],
+              repeatInterval: newHabit.repeatInterval || 2,
+              reminders: newHabit.reminders || [],
+              category: newHabit.category || 'Geral'
+            };
+            setHabits(habits.map(h => h.id === editingHabit.id ? updatedHabit : h));
+            console.log("Habit edited successfully:", updatedHabit);
+            setEditingHabit(null);
+          } else {
+            // Add new habit
+            console.log("Creating new habit...");
+            const habit = {
+              id: generateUUID(),
+              name: newHabit.name,
+              goal: newHabit.goal,
+              unit: newHabit.unit,
+              repeatType: newHabit.repeatType,
+              repeatDays: newHabit.repeatDays || [],
+              repeatInterval: newHabit.repeatInterval || 2,
+              reminders: newHabit.reminders || [],
+              category: newHabit.category || 'Geral',
+              progress: [],
+              createdAt: new Date().toISOString()
+            };
+            setHabits(prevHabits => [...prevHabits, habit]);
+            console.log("Habit added successfully:", habit);
+          }
+          setNewHabit({ name: '', goal: 1, unit: 'vezes', repeatType: 'diariamente', repeatDays: [], repeatInterval: 2, reminders: [], category: 'Geral' });
+        } catch (error) {
+          console.error("Error saving habit:", error.message, error.stack);
+          alert('Erro ao salvar hábito: ' + error.message);
+        }
+      };
+
+      // Start editing a habit
+      const startEditing = (habit) => {
+        setEditingHabit(habit);
+        setNewHabit({
+          name: habit.name,
+          goal: habit.goal,
+          unit: habit.unit,
+          repeatType: habit.repeatType,
+          repeatDays: habit.repeatDays || [],
+          repeatInterval: habit.repeatInterval || 2,
+          reminders: habit.reminders || [],
+          category: habit.category || 'Geral'
+        });
+        console.log("Started editing habit:", habit.id);
+      };
+
+      // Delete habit
+      const deleteHabit = (habitId) => {
+        if (window.confirm('Tem certeza que deseja excluir este hábito?')) {
+          console.log("Deleting habit:", habitId);
+          try {
+            setHabits(habits.filter(h => h.id !== habitId));
+            if (timer.habitId === habitId) {
+              setTimer({ habitId: null, seconds: 0, isRunning: false });
+            }
+            console.log("Habit deleted successfully:", habitId);
+          } catch (error) {
+            console.error("Error deleting habit:", error);
+            alert('Erro ao excluir hábito: ' + error.message);
+          }
+        }
+      };
+
+      // Mark habit as complete
+      const completeHabit = (habitId, times = 1) => {
+        console.log("Marking habit as complete:", habitId);
+        try {
+          const habit = habits.find(h => h.id === habitId);
+          const today = new Date().toISOString().split('T')[0];
+          const updatedProgress = [...(habit.progress || []), { date: today, times, amount: habit.unit === 'minutos' && timer.habitId === habitId ? timer.seconds / 60 : habit.goal }];
+          const updatedHabits = habits.map(h => h.id === habitId ? { ...h, progress: updatedProgress } : h);
+          setHabits(updatedHabits);
+          if (timer.habitId === habitId) {
+            setTimer({ habitId: null, seconds: 0, isRunning: false });
+          }
+          console.log("Habit marked as complete:", habitId);
+        } catch (error) {
+          console.error("Error marking habit:", error);
+        }
+      };
+
+      // Timer controls
+      const startTimer = (habitId) => {
+        setTimer({ habitId, seconds: 0, isRunning: true });
+        console.log("Timer started for habit:", habitId);
+      };
+      const pauseTimer = () => {
+        setTimer(prev => ({ ...prev, isRunning: false }));
+        console.log("Timer paused");
+      };
+      const resetTimer = () => {
+        setTimer(prev => ({ ...prev, seconds: 0, isRunning: false }));
+        console.log("Timer reset");
+      };
+
+      // Calculate stats
+      const getStats = (habit) => {
+        const progress = habit.progress || [];
+        const today = new Date();
+        const startDate = new Date(habit.createdAt);
+        const daysSinceStart = Math.ceil((today - startDate) / (1000 * 60 * 60 * 24));
+        const completedDays = [...new Set(progress.map(p => p.date))].length;
+        let currentStreak = 0;
+        let bestStreak = 0;
+        let currentDate = new Date(today);
+        let tempStreak = 0;
+
+        for (let i = 0; i < daysSinceStart; i++) {
+          const dateStr = currentDate.toISOString().split('T')[0];
+          const isCompleted = progress.some(p => p.date === dateStr);
+          if (isCompleted) {
+            tempStreak++;
+            currentStreak = tempStreak;
+            bestStreak = Math.max(bestStreak, tempStreak);
+          } else {
+            tempStreak = 0;
+          }
+          currentDate.setDate(currentDate.getDate() - 1);
+        }
+
+        const successRate = daysSinceStart > 0 ? (completedDays / daysSinceStart) * 100 : 0;
+        const totalCompleted = progress.reduce((sum, p) => sum + (p.times || 1), 0);
+        const total = progress.reduce((sum, p) => sum + (p.amount || 0), 0);
+
+        return {
+          currentStreak,
+          totalCompleted,
+          bestStreak,
+          successRate: successRate.toFixed(2),
+          total
+        };
+      };
+
+      // Generate calendar
+      const generateCalendar = (habit) => {
+        const year = currentMonth.getFullYear();
+        const month = currentMonth.getMonth();
+        const firstDay = new Date(year, month, 1).getDay();
+        const daysInMonth = new Date(year, month + 1, 0).getDate();
+        const calendar = [];
+        let day = 1;
+
+        for (let i = 0; i < 6; i++) {
+          const week = [];
+          for (let j = 0; j < 7; j++) {
+            if (i === 0 && j < firstDay) {
+              week.push(null);
+            } else if (day <= daysInMonth) {
+              const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+              const isCompleted = habit.progress?.some(p => p.date === dateStr);
+              week.push({ day, completed: isCompleted });
+              day++;
+            } else {
+              week.push(null);
+            }
+          }
+          calendar.push(week);
+          if (day > daysInMonth) break;
+        }
+        return calendar;
+      };
+
+      // Login Screen
+      if (!isAuthenticated) {
+        return (
+          <div className="container mx-auto p-4">
+            <h1 className="text-3xl font-bold mb-4">Rastreador de Hábitos</h1>
+            <form onSubmit={handleLogin} className="p-4 bg-gray-100 rounded shadow">
+              <label className="block mb-2">Senha:</label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="p-2 border rounded w-full mb-4"
+                required
+              />
+              <button type="submit" className="bg-blue-500 text-white px-4 py-2 rounded">Entrar</button>
+            </form>
+          </div>
+        );
+      }
+
+      // Main App
+      return (
+        <div className="container mx-auto p-4">
+          <h1 className="text-3xl font-bold mb-4">Rastreador de Hábitos</h1>
+
+          {/* Add/Edit Habit Form */}
+          <form onSubmit={saveHabit} className="mb-8 p-4 bg-gray-100 rounded shadow">
+            <h2 className="text-xl font-semibold mb-4">{editingHabit ? 'Editar Hábito' : 'Cadastrar Novo Hábito'}</h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <input
+                type="text"
+                placeholder="Nome do Hábito"
+                value={newHabit.name}
+                onChange={(e) => setNewHabit({ ...newHabit, name: e.target.value })}
+                className="p-2 border rounded"
+                required
+              />
+              <div>
+                <input
+                  type="number"
+                  placeholder="Objetivo"
+                  value={newHabit.goal}
+                  onChange={(e) => setNewHabit({ ...newHabit, goal: parseInt(e.target.value) || 1 })}
+                  className="p-2 border rounded w-1/2"
+                  min="1"
+                  required
+                />
+                <select
+                  value={newHabit.unit}
+                  onChange={(e) => setNewHabit({ ...newHabit, unit: e.target.value })}
+                  className="p-2 border rounded w-1/2"
+                >
+                  <option value="vezes">Vezes</option>
+                  <option value="páginas">Páginas</option>
+                  <option value="minutos">Minutos</option>
+                  <option value="quilômetros">Quilômetros</option>
+                  <option value="passos">Passos</option>
+                </select>
+              </div>
+              <select
+                value={newHabit.repeatType}
+                onChange={(e) => setNewHabit({ ...newHabit, repeatType: e.target.value, repeatDays: [] })}
+                className="p-2 border rounded"
+              >
+                <option value="diariamente">Diariamente</option>
+                <option value="mensalmente">Mensalmente</option>
+                <option value="intervalo">Intervalo</option>
+              </select>
+              {newHabit.repeatType === 'diariamente' && (
+                <div>
+                  <label>Dias da Semana:</label>
+                  {['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'].map((day, i) => (
+                    <label key={i} className="inline-block mr-2">
+                      <input
+                        type="checkbox"
+                        checked={newHabit.repeatDays.includes(i)}
+                        onChange={(e) => {
+                          const days = e.target.checked
+                            ? [...newHabit.repeatDays, i]
+                            : newHabit.repeatDays.filter(d => d !== i);
+                          setNewHabit({ ...newHabit, repeatDays: days });
+                        }}
+                      />
+                      {day}
+                    </label>
+                  ))}
+                </div>
+              )}
+              {newHabit.repeatType === 'mensalmente' && (
+                <div>
+                  <label>Dias do Mês:</label>
+                  {Array.from({ length: 31 }, (_, i) => i + 1).map(day => (
+                    <label key={day} className="inline-block mr-2">
+                      <input
+                        type="checkbox"
+                        checked={newHabit.repeatDays.includes(day)}
+                        onChange={(e) => {
+                          const days = e.target.checked
+                            ? [...newHabit.repeatDays, day]
+                            : newHabit.repeatDays.filter(d => d !== day);
+                          setNewHabit({ ...newHabit, repeatDays: days });
+                        }}
+                      />
+                      {day}
+                    </label>
+                  ))}
+                </div>
+              )}
+              {newHabit.repeatType === 'intervalo' && (
+                <select
+                  value={newHabit.repeatInterval}
+                  onChange={(e) => setNewHabit({ ...newHabit, repeatInterval: parseInt(e.target.value) })}
+                  className="p-2 border rounded"
+                >
+                  {[2, 3, 4, 5, 6, 7].map(i => (
+                    <option key={i} value={i}>A cada {i} dias</option>
+                  ))}
+                </select>
+              )}
+              <div>
+                <label>Lembretes (HH:MM):</label>
+                <input
+                  type="time"
+                  onChange={(e) => {
+                    if (e.target.value) {
+                      setNewHabit({ ...newHabit, reminders: [...newHabit.reminders, e.target.value] });
+                      e.target.value = '';
+                    }
+                  }}
+                  className="p-2 border rounded"
+                />
+                <div>
+                  {newHabit.reminders.map((reminder, i) => (
+                    <span key={i} className="inline-block mr-2 bg-gray-200 p-1 rounded">
+                      {reminder}
+                      <button
+                        onClick={() => setNewHabit({ ...newHabit, reminders: newHabit.reminders.filter((_, idx) => idx !== i) })}
+                        className="ml-1 text-red-500"
+                      >
+                        x
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              </div>
+              <input
+                type="text"
+                placeholder="Categoria (ex.: Saúde)"
+                value={newHabit.category}
+                onChange={(e) => setNewHabit({ ...newHabit, category: e.target.value })}
+                className="p-2 border rounded"
+              />
+            </div>
+            <div className="mt-4 flex gap-2">
+              <button type="submit" className="bg-blue-500 text-white px-4 py-2 rounded">
+                {editingHabit ? 'Salvar Alterações' : 'Cadastrar Hábito'}
+              </button>
+              {editingHabit && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingHabit(null);
+                    setNewHabit({ name: '', goal: 1, unit: 'vezes', repeatType: 'diariamente', repeatDays: [], repeatInterval: 2, reminders: [], category: 'Geral' });
+                    console.log("Cancelled editing");
+                  }}
+                  className="bg-gray-500 text-white px-4 py-2 rounded"
+                >
+                  Cancelar
+                </button>
+              )}
+            </div>
+          </form>
+
+          {/* Habit List */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
+            {habits.map(habit => {
+              const stats = getStats(habit);
+              const calendar = generateCalendar(habit);
+              return (
+                <div key={habit.id} className="p-4 bg-white rounded shadow">
+                  <div className="flex justify-between items-center mb-2">
+                    <h3 className="text-lg font-semibold">{habit.name}</h3>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => startEditing(habit)}
+                        className="text-blue-500 hover:text-blue-700"
+                        title="Editar"
+                      >
+                        ✏️
+                      </button>
+                      <button
+                        onClick={() => deleteHabit(habit.id)}
+                        className="text-red-500 hover:text-red-700"
+                        title="Excluir"
+                      >
+                        🗑️
+                      </button>
+                    </div>
+                  </div>
+                  <p>Objetivo: {habit.goal} {habit.unit}</p>
+                  <p>Categoria: {habit.category}</p>
+                  <p>Repetição: {habit.repeatType === 'diariamente' ? habit.repeatDays.map(d => ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'][d]).join(', ') :
+                    habit.repeatType === 'mensalmente' ? `Dias ${habit.repeatDays.join(', ')}` : `A cada ${habit.repeatInterval} dias`}</p>
+                  <p>Lembretes: {habit.reminders.join(', ') || 'Nenhum'}</p>
+
+                  {/* Timer */}
+                  {habit.unit === 'minutos' && (
+                    <div className="my-2">
+                      <p>Temporizador: {Math.floor(timer.seconds / 60)}:{String(timer.seconds % 60).padStart(2, '0')}</p>
+                      <button
+                        onClick={() => startTimer(habit.id)}
+                        className="bg-blue-500 text-white px-2 py-1 rounded mr-2"
+                        disabled={timer.isRunning && timer.habitId === habit.id}
+                      >
+                        Iniciar
+                      </button>
+                      <button
+                        onClick={pauseTimer}
+                        className="bg-yellow-500 text-white px-2 py-1 rounded mr-2"
+                        disabled={!timer.isRunning || timer.habitId !== habit.id}
+                      >
+                        Pausar
+                      </button>
+                      <button
+                        onClick={resetTimer}
+                        className="bg-red-500 text-white px-2 py-1 rounded"
+                        disabled={timer.habitId !== habit.id}
+                      >
+                        Reiniciar
+                      </button>
+                    </div>
+                  )}
+
+                  <button
+                    onClick={() => completeHabit(habit.id)}
+                    className="mt-2 bg-green-500 text-white px-4 py-2 rounded"
+                  >
+                    Marcar como Concluído
+                  </button>
+
+                  {/* Stats */}
+                  <div className="mt-4">
+                    <p>Sequência Atual: {stats.currentStreak} dias</p>
+                    <p>Número Concluídos: {stats.totalCompleted} vezes</p>
+                    <p>Melhor Sequência: {stats.bestStreak} dias</p>
+                    <p>Taxa de Sucesso: {stats.successRate}%</p>
+                    <p>Total: {stats.total} {habit.unit}</p>
+                  </div>
+
+                  {/* Calendar */}
+                  <div className="mt-4">
+                    <h4 className="text-md font-semibold">Calendário</h4>
+                    <div className="grid grid-cols-7 gap-1 text-center">
+                      {['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'].map(day => (
+                        <div key={day} className="font-bold">{day}</div>
+                      ))}
+                      {calendar.map((week, i) => week.map((day, j) => (
+                        <div key={`${i}-${j}`} className="p-1">
+                          {day ? (
+                            <span className={day.completed ? 'bg-green-200 rounded-full px-2' : ''}>
+                              {day.day} {day.completed ? '✅' : ''}
+                            </span>
+                          ) : ''}
+                        </div>
+                      )))}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      );
+    }
+
+    // Render App
+    try {
+      ReactDOM.render(
+        <ErrorBoundary>
+          <App />
+        </ErrorBoundary>,
+        document.getElementById('root')
+      );
+      console.log("App rendered successfully");
+    } catch (error) {
+      console.error("Error rendering app:", error);
+    }
+  </script>
+</body>
+</html>
